@@ -1,129 +1,165 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from typing import List
-from PyQt6.QtCore import Qt, QSize, QUrl
-from PyQt6.QtGui import QIcon, QPixmap, QColor
+from typing import List, Optional
+from PyQt6.QtCore import Qt, QSize, QRectF, pyqtSignal
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QImage
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QListWidget, QListWidgetItem,
     QMainWindow, QToolBar, QMessageBox, QWidget, QVBoxLayout, QLabel,
-    QPushButton, QColorDialog, QSlider, QLineEdit, QHBoxLayout, QStatusBar
+    QPushButton, QColorDialog, QSlider, QLineEdit, QHBoxLayout, QStatusBar,
+    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QSpinBox
 )
-from .watermark_core import apply_text_watermark, apply_image_watermark
+from PIL import Image, ImageQt, ImageDraw, ImageFont
+
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
 def is_image_file(p: Path) -> bool:
-    """判断是否为支持的图片文件"""
     return p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
 
 
 class ThumbList(QListWidget):
-    """支持拖拽导入的缩略图列表"""
+    imageSelected = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setViewMode(QListWidget.ViewMode.IconMode)
-        self.setIconSize(QSize(128, 128))
+        self.setIconSize(QSize(100, 100))
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setAcceptDrops(True)
         self.setSpacing(6)
+        self.itemClicked.connect(self._on_item_clicked)
 
-    def dragEnterEvent(self, e):
-        if e.mimeData().hasUrls():
-            e.acceptProposedAction()
-        else:
-            e.ignore()
+    def _on_item_clicked(self, item):
+        self.imageSelected.emit(item.data(Qt.ItemDataRole.UserRole))
 
-    def dropEvent(self, e):
-        paths = [Path(QUrl(u).toLocalFile()) for u in e.mimeData().urls()]
-        self.parent().add_images(paths)
+
+class PreviewArea(QGraphicsView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.image_item: Optional[QGraphicsPixmapItem] = None
+
+    def load_image(self, img_path: str):
+        self._scene.clear()
+        pixmap = QPixmap(img_path)
+        if pixmap.isNull():
+            return
+        self.image_item = self._scene.addPixmap(pixmap)
+        self._scene.setSceneRect(QRectF(pixmap.rect()))
+        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def show_composite(self, pil_image: Image.Image):
+        qimage = ImageQt.ImageQt(pil_image.convert("RGBA"))
+        pixmap = QPixmap.fromImage(QImage(qimage))
+        self._scene.clear()
+        self.image_item = self._scene.addPixmap(pixmap)
+        self._scene.setSceneRect(QRectF(pixmap.rect()))
+        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
 
 class MainWindow(QMainWindow):
-    """主窗口"""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Watermark App — 添加文本/图片水印")
-        self.resize(1050, 700)
+        self.setWindowTitle("Watermark App — 文本字号调节版")
+        self.resize(1250, 800)
 
-        # 主界面组件
         self.thumb_list = ThumbList(self)
+        self.preview = PreviewArea(self)
         self.status = QStatusBar(self)
         self.setStatusBar(self.status)
 
-        # 文本输入与控制
+        # 文本水印设置
         self.text_input = QLineEdit()
-        self.text_input.setPlaceholderText("请输入水印文本…")
+        self.text_input.setPlaceholderText("输入水印文本…")
 
-        self.color_btn = QPushButton("选择颜色")
+        self.color_btn = QPushButton("颜色")
         self.color = QColor(255, 255, 255)
-
         self.alpha_slider = QSlider(Qt.Orientation.Horizontal)
         self.alpha_slider.setRange(0, 100)
-        self.alpha_slider.setValue(50)
+        self.alpha_slider.setValue(70)
 
-        self.img_btn = QPushButton("选择图片水印 (PNG)")
+        # 字号调节
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 128)
+        self.font_size_spin.setValue(36)
+
+        # 图片水印
+        self.img_btn = QPushButton("选择PNG水印")
         self.apply_text_btn = QPushButton("应用文本水印")
         self.apply_img_btn = QPushButton("应用图片水印")
 
-        # 布局设置
-        layout = QVBoxLayout()
-        layout.addWidget(self.thumb_list)
-        layout.addWidget(self.text_input)
+        # 布局
+        control_layout = QVBoxLayout()
+        control_layout.addWidget(QLabel("预览窗口"))
+        control_layout.addWidget(self.preview)
+        control_layout.addWidget(QLabel("水印文字"))
+        control_layout.addWidget(self.text_input)
 
-        hl = QHBoxLayout()
-        hl.addWidget(self.color_btn)
-        hl.addWidget(QLabel("透明度"))
-        hl.addWidget(self.alpha_slider)
-        layout.addLayout(hl)
+        hl1 = QHBoxLayout()
+        hl1.addWidget(self.color_btn)
+        hl1.addWidget(QLabel("透明度"))
+        hl1.addWidget(self.alpha_slider)
+        control_layout.addLayout(hl1)
 
-        layout.addWidget(self.img_btn)
-        layout.addWidget(self.apply_text_btn)
-        layout.addWidget(self.apply_img_btn)
+        hl2 = QHBoxLayout()
+        hl2.addWidget(QLabel("字号"))
+        hl2.addWidget(self.font_size_spin)
+        control_layout.addLayout(hl2)
+
+        control_layout.addWidget(self.img_btn)
+        control_layout.addWidget(self.apply_text_btn)
+        control_layout.addWidget(self.apply_img_btn)
 
         wrapper = QWidget()
-        wrapper.setLayout(layout)
+        layout = QHBoxLayout(wrapper)
+        layout.addWidget(self.thumb_list, 2)
+        layout.addLayout(control_layout, 5)
         self.setCentralWidget(wrapper)
 
-        # 工具栏
         tb = QToolBar("File", self)
-        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
         act_open = tb.addAction("打开文件...")
         act_open.triggered.connect(self.open_files)
         act_open_dir = tb.addAction("打开文件夹...")
         act_open_dir.triggered.connect(self.open_dir)
 
-        # 信号连接
+        # 信号绑定
         self.color_btn.clicked.connect(self.choose_color)
         self.img_btn.clicked.connect(self.choose_logo)
-        self.apply_text_btn.clicked.connect(self.add_text_watermark)
-        self.apply_img_btn.clicked.connect(self.add_image_watermark)
+        self.apply_text_btn.clicked.connect(self.apply_text)
+        self.apply_img_btn.clicked.connect(self.apply_image)
+        self.thumb_list.imageSelected.connect(self.show_preview)
 
-        # 内部状态
         self.watermark_img_path = None
+        self.current_img_path = None
         self.update_status()
 
-    # =================== 文件导入 ===================
-    def update_status(self):
-        self.status.showMessage(f"当前已导入图片 {self.thumb_list.count()} 张")
-
+    # === 文件导入 ===
     def open_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "选择图片",
-            "",
-            "Images (*.jpg *.png *.jpeg *.bmp *.tif *.tiff)"
-        )
+        files, _ = QFileDialog.getOpenFileNames(self, "选择图片", "", "Images (*.jpg *.png *.jpeg *.bmp *.tif *.tiff)")
         if files:
             self.add_images([Path(f) for f in files])
+            self.show_preview(files[0])
 
     def open_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择文件夹", "")
         if d:
+            imgs = []
             for root, _, files in os.walk(d):
-                self.add_images([Path(root) / f for f in files])
+                for f in files:
+                    p = Path(root) / f
+                    if is_image_file(p):
+                        imgs.append(str(p))
+                        icon = QIcon(str(p))
+                        item = QListWidgetItem(icon, p.name)
+                        item.setData(Qt.ItemDataRole.UserRole, str(p))
+                        self.thumb_list.addItem(item)
+            if imgs:
+                self.show_preview(imgs[0])
+        self.update_status()
 
     def add_images(self, paths: List[Path]):
         for p in paths:
@@ -135,7 +171,12 @@ class MainWindow(QMainWindow):
             self.thumb_list.addItem(item)
         self.update_status()
 
-    # =================== 控制项 ===================
+    # === 预览 ===
+    def show_preview(self, path: str):
+        self.current_img_path = path
+        self.preview.load_image(path)
+
+    # === 控件操作 ===
     def choose_color(self):
         color = QColorDialog.getColor(self.color, self)
         if color.isValid():
@@ -143,17 +184,15 @@ class MainWindow(QMainWindow):
             self.color_btn.setStyleSheet(f"background-color: {color.name()};")
 
     def choose_logo(self):
-        file, _ = QFileDialog.getOpenFileName(
-            self, "选择PNG水印图片", "", "PNG Images (*.png)"
-        )
+        file, _ = QFileDialog.getOpenFileName(self, "选择PNG水印", "", "PNG Images (*.png)")
         if file:
             self.watermark_img_path = file
             self.img_btn.setText(f"已选择: {os.path.basename(file)}")
 
-    # =================== 水印操作 ===================
-    def add_text_watermark(self):
-        if self.thumb_list.count() == 0:
-            QMessageBox.warning(self, "提示", "请先导入图片")
+    # === 应用文本水印 ===
+    def apply_text(self):
+        if not self.current_img_path:
+            QMessageBox.warning(self, "提示", "请先选择图片")
             return
 
         text = self.text_input.text().strip()
@@ -161,32 +200,43 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请输入水印文本")
             return
 
+        font_size = self.font_size_spin.value()
+        # 尝试使用一个通用字体
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+
+        base = Image.open(self.current_img_path).convert("RGBA")
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         alpha = int(self.alpha_slider.value() * 2.55)
-        color_rgb = self.color.getRgb()[:3]
+        draw.text((40, 40), text, fill=self.color.getRgb()[:3] + (alpha,), font=font)
+        combined = Image.alpha_composite(base, overlay)
+        self.preview.show_composite(combined)
 
-        for i in range(self.thumb_list.count()):
-            p = self.thumb_list.item(i).data(Qt.ItemDataRole.UserRole)
-            img = apply_text_watermark(p, text, color=color_rgb, alpha=alpha)
-            save_path = str(Path(p).with_name(f"{Path(p).stem}_wm.jpg"))
-            img.save(save_path, quality=95)
-
-        QMessageBox.information(self, "完成", "文本水印已应用并保存。")
-
-    def add_image_watermark(self):
-        if not self.watermark_img_path:
-            QMessageBox.warning(self, "提示", "请先选择水印图片")
+    # === 应用图片水印 ===
+    def apply_image(self):
+        if not self.current_img_path or not self.watermark_img_path:
+            QMessageBox.warning(self, "提示", "请先选择图片和水印文件")
             return
 
-        alpha = int(self.alpha_slider.value() * 2.55)
-        for i in range(self.thumb_list.count()):
-            p = self.thumb_list.item(i).data(Qt.ItemDataRole.UserRole)
-            img = apply_image_watermark(p, self.watermark_img_path, scale=0.3, alpha=alpha)
-            save_path = str(Path(p).with_name(f"{Path(p).stem}_imgwm.jpg"))
-            img.save(save_path, quality=95)
+        base = Image.open(self.current_img_path).convert("RGBA")
+        watermark = Image.open(self.watermark_img_path).convert("RGBA")
+        scale = 0.3
+        w = int(base.width * scale)
+        h = int(watermark.height * (w / watermark.width))
+        watermark = watermark.resize((w, h))
+        alpha_val = int(self.alpha_slider.value() * 2.55)
+        watermark.putalpha(alpha_val)
+        pos = (base.width - watermark.width - 20, base.height - watermark.height - 20)
+        base.paste(watermark, pos, watermark)
+        self.preview.show_composite(base)
 
-        QMessageBox.information(self, "完成", "图片水印已应用并保存。")
+    def update_status(self):
+        self.status.showMessage(f"已导入图片数：{self.thumb_list.count()}")
 
-# =================== 应用入口 ===================
+
 def run_app():
     import sys
     app = QApplication(sys.argv)
