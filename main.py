@@ -1243,17 +1243,17 @@ class WatermarkApp(QMainWindow):
         q_image = ImageQt.ImageQt(watermarked_image)
         pixmap = QPixmap.fromImage(q_image)
 
-        # 缩放以适应预览窗口，但保持原始比例和预览框大小
+        # 关键修改：使用当前预览窗口的大小进行缩放
+        # 移除固定大小设置，改为使用当前窗口尺寸
         scaled_pixmap = pixmap.scaled(
-            self.watermark_preview.size(),
+            self.watermark_preview.width(),  # 使用当前宽度
+            self.watermark_preview.height(), # 使用当前高度
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
 
         self.watermark_preview.setPixmap(scaled_pixmap)
-        # 固定预览框大小
-        self.watermark_preview.setFixedSize(self.watermark_preview.size())
-
+        
     def apply_watermark(self, image):
         # 创建一个副本以避免修改原图
         img = image.copy()
