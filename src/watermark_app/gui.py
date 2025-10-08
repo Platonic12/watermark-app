@@ -1,164 +1,192 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from typing import Iterable, List, Set
-
+from typing import List
 from PyQt6.QtCore import Qt, QSize, QUrl
-from PyQt6.QtGui import QIcon, QPixmap, QAction
+from PyQt6.QtGui import QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QListWidget, QListWidgetItem,
-    QMainWindow, QToolBar, QMessageBox, QWidget, QVBoxLayout, QLabel, QStatusBar
+    QMainWindow, QToolBar, QMessageBox, QWidget, QVBoxLayout, QLabel,
+    QPushButton, QColorDialog, QSlider, QLineEdit, QHBoxLayout, QStatusBar
 )
+from .watermark_core import apply_text_watermark, apply_image_watermark
 
-
-SUPPORTED_EXTS: Set[str] = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
 def is_image_file(p: Path) -> bool:
+    """判断是否为支持的图片文件"""
     return p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
 
 
-def iter_images_from_paths(paths: Iterable[Path]) -> Iterable[Path]:
-    """
-    将传入的文件或文件夹路径展开为图片文件列表（递归扫描文件夹）。
-    """
-    for p in paths:
-        if p.is_dir():
-            for root, _, files in os.walk(p):
-                for f in files:
-                    fp = Path(root) / f
-                    if is_image_file(fp):
-                        yield fp
-        elif is_image_file(p):
-            yield p
-
-
 class ThumbList(QListWidget):
-    """
-    支持拖拽导入（文件/文件夹）的缩略图列表。
-    """
-    def __init__(self, parent: QWidget | None = None):
+    """支持拖拽导入的缩略图列表"""
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setIconSize(QSize(128, 128))
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setUniformItemSizes(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
-        self.setSpacing(8)
+        self.setSpacing(6)
 
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
         else:
-            event.ignore()
+            e.ignore()
 
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event):
-        urls = event.mimeData().urls()
-        paths = [Path(QUrl(u).toLocalFile()) for u in urls]
-        self.parent().add_images(paths)  # 交给 MainWindow 统一处理
-        event.acceptProposedAction()
+    def dropEvent(self, e):
+        paths = [Path(QUrl(u).toLocalFile()) for u in e.mimeData().urls()]
+        self.parent().add_images(paths)
 
 
 class MainWindow(QMainWindow):
+    """主窗口"""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Watermark App — 导入图片预览")
-        self.resize(1000, 650)
+        self.setWindowTitle("Watermark App — 添加文本/图片水印")
+        self.resize(1050, 700)
 
+        # 主界面组件
         self.thumb_list = ThumbList(self)
+        self.status = QStatusBar(self)
+        self.setStatusBar(self.status)
 
-        tip = QLabel("拖拽图片或文件夹到此处，或使用上方“打开文件/打开文件夹”。")
-        tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tip.setStyleSheet("color: #666;")
+        # 文本输入与控制
+        self.text_input = QLineEdit()
+        self.text_input.setPlaceholderText("请输入水印文本…")
+
+        self.color_btn = QPushButton("选择颜色")
+        self.color = QColor(255, 255, 255)
+
+        self.alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.alpha_slider.setRange(0, 100)
+        self.alpha_slider.setValue(50)
+
+        self.img_btn = QPushButton("选择图片水印 (PNG)")
+        self.apply_text_btn = QPushButton("应用文本水印")
+        self.apply_img_btn = QPushButton("应用图片水印")
+
+        # 布局设置
+        layout = QVBoxLayout()
+        layout.addWidget(self.thumb_list)
+        layout.addWidget(self.text_input)
+
+        hl = QHBoxLayout()
+        hl.addWidget(self.color_btn)
+        hl.addWidget(QLabel("透明度"))
+        hl.addWidget(self.alpha_slider)
+        layout.addLayout(hl)
+
+        layout.addWidget(self.img_btn)
+        layout.addWidget(self.apply_text_btn)
+        layout.addWidget(self.apply_img_btn)
 
         wrapper = QWidget()
-        layout = QVBoxLayout(wrapper)
-        layout.addWidget(self.thumb_list)
-        layout.addWidget(tip)
+        wrapper.setLayout(layout)
         self.setCentralWidget(wrapper)
 
         # 工具栏
         tb = QToolBar("File", self)
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
-
-        act_open_files = QAction(QIcon(), "打开文件...", self)
-        act_open_files.triggered.connect(self.open_files)
-        tb.addAction(act_open_files)
-
-        act_open_dir = QAction(QIcon(), "打开文件夹...", self)
+        act_open = tb.addAction("打开文件...")
+        act_open.triggered.connect(self.open_files)
+        act_open_dir = tb.addAction("打开文件夹...")
         act_open_dir.triggered.connect(self.open_dir)
-        tb.addAction(act_open_dir)
 
-        self.status = QStatusBar(self)
-        self.setStatusBar(self.status)
+        # 信号连接
+        self.color_btn.clicked.connect(self.choose_color)
+        self.img_btn.clicked.connect(self.choose_logo)
+        self.apply_text_btn.clicked.connect(self.add_text_watermark)
+        self.apply_img_btn.clicked.connect(self.add_image_watermark)
+
+        # 内部状态
+        self.watermark_img_path = None
         self.update_status()
 
+    # =================== 文件导入 ===================
     def update_status(self):
-        self.status.showMessage(f"已导入图片：{self.thumb_list.count()} 张")
+        self.status.showMessage(f"当前已导入图片 {self.thumb_list.count()} 张")
 
-    # —— 打开对话框：多文件 ——
     def open_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "选择图片（可多选）",
+            "选择图片",
             "",
-            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"
+            "Images (*.jpg *.png *.jpeg *.bmp *.tif *.tiff)"
         )
         if files:
             self.add_images([Path(f) for f in files])
 
-    # —— 打开对话框：文件夹 ——
     def open_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择图片所在文件夹", "")
+        d = QFileDialog.getExistingDirectory(self, "选择文件夹", "")
         if d:
-            self.add_images([Path(d)])
+            for root, _, files in os.walk(d):
+                self.add_images([Path(root) / f for f in files])
 
-    # —— 统一添加图片 ——（去重、生成缩略图+文件名）
-    def add_images(self, inputs: Iterable[Path]):
-        new_files: List[Path] = list(iter_images_from_paths(inputs))
-        if not new_files:
-            QMessageBox.information(self, "提示", "未发现可导入的图片。")
+    def add_images(self, paths: List[Path]):
+        for p in paths:
+            if not is_image_file(p):
+                continue
+            icon = QIcon(str(p))
+            item = QListWidgetItem(icon, p.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            self.thumb_list.addItem(item)
+        self.update_status()
+
+    # =================== 控制项 ===================
+    def choose_color(self):
+        color = QColorDialog.getColor(self.color, self)
+        if color.isValid():
+            self.color = color
+            self.color_btn.setStyleSheet(f"background-color: {color.name()};")
+
+    def choose_logo(self):
+        file, _ = QFileDialog.getOpenFileName(
+            self, "选择PNG水印图片", "", "PNG Images (*.png)"
+        )
+        if file:
+            self.watermark_img_path = file
+            self.img_btn.setText(f"已选择: {os.path.basename(file)}")
+
+    # =================== 水印操作 ===================
+    def add_text_watermark(self):
+        if self.thumb_list.count() == 0:
+            QMessageBox.warning(self, "提示", "请先导入图片")
             return
 
-        # 已有项的路径集合，用于去重
-        existing: Set[str] = set()
+        text = self.text_input.text().strip()
+        if not text:
+            QMessageBox.warning(self, "提示", "请输入水印文本")
+            return
+
+        alpha = int(self.alpha_slider.value() * 2.55)
+        color_rgb = self.color.getRgb()[:3]
+
         for i in range(self.thumb_list.count()):
-            it = self.thumb_list.item(i)
-            existing.add(it.data(Qt.ItemDataRole.UserRole))
+            p = self.thumb_list.item(i).data(Qt.ItemDataRole.UserRole)
+            img = apply_text_watermark(p, text, color=color_rgb, alpha=alpha)
+            save_path = str(Path(p).with_name(f"{Path(p).stem}_wm.jpg"))
+            img.save(save_path, quality=95)
 
-        added = 0
-        for p in new_files:
-            sp = str(p.resolve())
-            if sp in existing:
-                continue
+        QMessageBox.information(self, "完成", "文本水印已应用并保存。")
 
-            pix = QPixmap(sp)
-            if pix.isNull():
-                # 读不到就跳过
-                continue
-            icon = QIcon(pix.scaled(256, 256, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+    def add_image_watermark(self):
+        if not self.watermark_img_path:
+            QMessageBox.warning(self, "提示", "请先选择水印图片")
+            return
 
-            item = QListWidgetItem(icon, p.name)
-            item.setData(Qt.ItemDataRole.UserRole, sp)
-            item.setToolTip(sp)
-            item.setSizeHint(QSize(150, 160))
-            self.thumb_list.addItem(item)
-            added += 1
+        alpha = int(self.alpha_slider.value() * 2.55)
+        for i in range(self.thumb_list.count()):
+            p = self.thumb_list.item(i).data(Qt.ItemDataRole.UserRole)
+            img = apply_image_watermark(p, self.watermark_img_path, scale=0.3, alpha=alpha)
+            save_path = str(Path(p).with_name(f"{Path(p).stem}_imgwm.jpg"))
+            img.save(save_path, quality=95)
 
-        if added > 0:
-            self.update_status()
-        else:
-            QMessageBox.information(self, "提示", "没有新增图片（可能都已导入或格式不支持）。")
+        QMessageBox.information(self, "完成", "图片水印已应用并保存。")
 
-
+# =================== 应用入口 ===================
 def run_app():
     import sys
     app = QApplication(sys.argv)
