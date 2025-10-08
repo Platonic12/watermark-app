@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QListWidget, QListWidgetItem,
     QMainWindow, QToolBar, QMessageBox, QWidget, QVBoxLayout, QLabel,
     QPushButton, QColorDialog, QSlider, QLineEdit, QHBoxLayout, QStatusBar,
-    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QSpinBox
+    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem,
+    QSpinBox, QComboBox
 )
 from PIL import Image, ImageQt, ImageDraw, ImageFont
 
@@ -41,6 +42,7 @@ class PreviewArea(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.image_item: Optional[QGraphicsPixmapItem] = None
+        self.current_image: Optional[Image.Image] = None  # 用于导出保存
 
     def load_image(self, img_path: str):
         self._scene.clear()
@@ -50,8 +52,10 @@ class PreviewArea(QGraphicsView):
         self.image_item = self._scene.addPixmap(pixmap)
         self._scene.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.current_image = Image.open(img_path).convert("RGBA")
 
     def show_composite(self, pil_image: Image.Image):
+        self.current_image = pil_image
         qimage = ImageQt.ImageQt(pil_image.convert("RGBA"))
         pixmap = QPixmap.fromImage(QImage(qimage))
         self._scene.clear()
@@ -63,8 +67,8 @@ class PreviewArea(QGraphicsView):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Watermark App — 文本字号调节版")
-        self.resize(1250, 800)
+        self.setWindowTitle("Watermark App — 导出功能增强版")
+        self.resize(1300, 820)
 
         self.thumb_list = ThumbList(self)
         self.preview = PreviewArea(self)
@@ -81,10 +85,20 @@ class MainWindow(QMainWindow):
         self.alpha_slider.setRange(0, 100)
         self.alpha_slider.setValue(70)
 
-        # 字号调节
         self.font_size_spin = QSpinBox()
         self.font_size_spin.setRange(8, 128)
         self.font_size_spin.setValue(36)
+
+        # 导出设置
+        self.output_dir = None
+        self.choose_output_btn = QPushButton("选择输出文件夹")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["PNG", "JPEG"])
+        self.naming_mode = QComboBox()
+        self.naming_mode.addItems(["保留原文件名", "添加前缀", "添加后缀"])
+        self.prefix_input = QLineEdit("wm_")
+        self.suffix_input = QLineEdit("_watermarked")
+        self.export_btn = QPushButton("导出水印图片")
 
         # 图片水印
         self.img_btn = QPushButton("选择PNG水印")
@@ -112,6 +126,27 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.img_btn)
         control_layout.addWidget(self.apply_text_btn)
         control_layout.addWidget(self.apply_img_btn)
+        control_layout.addWidget(QLabel("导出设置"))
+
+        hl3 = QHBoxLayout()
+        hl3.addWidget(QLabel("输出格式"))
+        hl3.addWidget(self.format_combo)
+        control_layout.addLayout(hl3)
+
+        control_layout.addWidget(self.choose_output_btn)
+        hl4 = QHBoxLayout()
+        hl4.addWidget(QLabel("命名规则"))
+        hl4.addWidget(self.naming_mode)
+        control_layout.addLayout(hl4)
+
+        hl5 = QHBoxLayout()
+        hl5.addWidget(QLabel("前缀"))
+        hl5.addWidget(self.prefix_input)
+        hl5.addWidget(QLabel("后缀"))
+        hl5.addWidget(self.suffix_input)
+        control_layout.addLayout(hl5)
+
+        control_layout.addWidget(self.export_btn)
 
         wrapper = QWidget()
         layout = QHBoxLayout(wrapper)
@@ -119,6 +154,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(control_layout, 5)
         self.setCentralWidget(wrapper)
 
+        # 工具栏
         tb = QToolBar("File", self)
         self.addToolBar(tb)
         act_open = tb.addAction("打开文件...")
@@ -132,6 +168,8 @@ class MainWindow(QMainWindow):
         self.apply_text_btn.clicked.connect(self.apply_text)
         self.apply_img_btn.clicked.connect(self.apply_image)
         self.thumb_list.imageSelected.connect(self.show_preview)
+        self.choose_output_btn.clicked.connect(self.choose_output_dir)
+        self.export_btn.clicked.connect(self.export_image)
 
         self.watermark_img_path = None
         self.current_img_path = None
@@ -189,6 +227,12 @@ class MainWindow(QMainWindow):
             self.watermark_img_path = file
             self.img_btn.setText(f"已选择: {os.path.basename(file)}")
 
+    def choose_output_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹", "")
+        if folder:
+            self.output_dir = folder
+            self.choose_output_btn.setText(f"已选择: {folder}")
+
     # === 应用文本水印 ===
     def apply_text(self):
         if not self.current_img_path:
@@ -201,7 +245,6 @@ class MainWindow(QMainWindow):
             return
 
         font_size = self.font_size_spin.value()
-        # 尝试使用一个通用字体
         try:
             font = ImageFont.truetype("arial.ttf", font_size)
         except:
@@ -232,6 +275,40 @@ class MainWindow(QMainWindow):
         pos = (base.width - watermark.width - 20, base.height - watermark.height - 20)
         base.paste(watermark, pos, watermark)
         self.preview.show_composite(base)
+
+    # === 导出功能 ===
+    def export_image(self):
+        if not self.preview.current_image:
+            QMessageBox.warning(self, "提示", "没有可导出的图像，请先应用水印")
+            return
+        if not self.output_dir:
+            QMessageBox.warning(self, "提示", "请选择输出文件夹")
+            return
+
+        input_dir = str(Path(self.current_img_path).parent)
+        if os.path.abspath(self.output_dir) == os.path.abspath(input_dir):
+            QMessageBox.warning(self, "警告", "禁止导出到原文件夹，以防覆盖原图")
+            return
+
+        format_choice = self.format_combo.currentText().upper()
+        name_mode = self.naming_mode.currentText()
+        prefix = self.prefix_input.text()
+        suffix = self.suffix_input.text()
+
+        in_path = Path(self.current_img_path)
+        base_name = in_path.stem
+        ext = ".jpg" if format_choice == "JPEG" else ".png"
+
+        if name_mode == "添加前缀":
+            out_name = prefix + base_name + ext
+        elif name_mode == "添加后缀":
+            out_name = base_name + suffix + ext
+        else:
+            out_name = base_name + ext
+
+        out_path = Path(self.output_dir) / out_name
+        self.preview.current_image.convert("RGB").save(out_path, format_choice)
+        QMessageBox.information(self, "导出成功", f"文件已保存到：\n{out_path}")
 
     def update_status(self):
         self.status.showMessage(f"已导入图片数：{self.thumb_list.count()}")
