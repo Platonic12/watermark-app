@@ -689,19 +689,26 @@ class WatermarkApp(QMainWindow):
                 QMessageBox.warning(self, "警告", f"模板 '{name}' 已存在")
                 return
 
-        # 创建模板（深拷贝设置以避免后续修改影响模板）
+        # 创建模板（深拷贝设置并确保数据类型正确）
         import copy
-
+        # 确保颜色值是整数元组
+        color = self.watermark_settings["color"]
+        validated_color = tuple(int(c) for c in color)
+        
+        # 复制并修正所有需要序列化的值
+        settings_copy = copy.deepcopy(self.watermark_settings)
+        settings_copy["color"] = validated_color  # 确保颜色是整数元组
+        
         new_template = {
             "name": name,
-            "watermark_settings": copy.deepcopy(self.watermark_settings),
-            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "watermark_settings": settings_copy,
+            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
         # 添加到模板列表并刷新UI
         self.templates.append(new_template)
         self.template_list.addItem(name)
-
+        
         # 保存模板到文件
         self.save_templates_to_file()
         QMessageBox.information(self, "成功", f"模板 '{name}' 已保存")
@@ -733,17 +740,40 @@ class WatermarkApp(QMainWindow):
             QMessageBox.information(self, "成功", f"模板 '{name}' 已删除")
 
     def load_templates(self):
-        """从文件加载模板"""
+        """从文件加载模板并验证格式"""
         try:
             # 确保模板目录存在
             template_dir = os.path.expanduser("~/.watermark_app")
             os.makedirs(template_dir, exist_ok=True)
             template_file = os.path.join(template_dir, "templates.json")
-
+            
             if os.path.exists(template_file):
                 with open(template_file, "r", encoding="utf-8") as f:
-                    self.templates = json.load(f)
-
+                    loaded_templates = json.load(f)
+                
+                # 验证并修复加载的模板数据
+                self.templates = []
+                for temp in loaded_templates:
+                    # 基本验证
+                    if not isinstance(temp, dict) or "name" not in temp or "watermark_settings" not in temp:
+                        continue
+                    
+                    # 验证颜色格式
+                    if "color" in temp["watermark_settings"]:
+                        color = temp["watermark_settings"]["color"]
+                        # 确保颜色是包含4个整数的元组/列表
+                        if isinstance(color, (list, tuple)) and len(color) == 4:
+                            try:
+                                # 转换为整数元组
+                                temp["watermark_settings"]["color"] = tuple(int(c) for c in color)
+                            except:
+                                # 颜色转换失败，使用默认值
+                                temp["watermark_settings"]["color"] = (255, 255, 255, 128)
+                        else:
+                            temp["watermark_settings"]["color"] = (255, 255, 255, 128)
+                    
+                    self.templates.append(temp)
+                
                 # 更新模板列表UI
                 self.template_list.clear()
                 for template in self.templates:
@@ -1066,17 +1096,39 @@ class WatermarkApp(QMainWindow):
         self.dragging = False
 
     def on_template_selected(self, item):
-        """模板选中时，应用模板的水印设置"""
-        name = item.text()
-        for template in self.templates:
-            if template["name"] == name:
-                # 复制模板的水印设置（避免直接引用导致原模板被修改）
-                self.watermark_settings = template["watermark_settings"].copy()
-                # 更新UI显示，让设置面板与模板设置同步
-                self.update_ui_from_settings()
-                # 刷新预览，显示模板效果
-                self.update_preview()
-                break
+            """模板选中时，应用模板的水印设置"""
+            name = item.text()
+            for template in self.templates:
+                if template["name"] == name:
+                    # 复制模板的水印设置
+                    self.watermark_settings = template["watermark_settings"].copy()
+                    
+                    # 修复颜色格式 - 确保是有效的RGBA元组
+                    color = self.watermark_settings.get("color", (255, 255, 255, 128))
+                    try:
+                        # 确保是元组且包含4个整数
+                        if not isinstance(color, tuple) or len(color) != 4:
+                            raise ValueError("颜色格式必须是包含4个元素的元组")
+                        
+                        # 确保每个值都是0-255之间的整数
+                        validated_color = []
+                        for c in color:
+                            if isinstance(c, float):  # 处理可能的浮点值
+                                c = int(round(c))
+                            if not isinstance(c, int) or c < 0 or c > 255:
+                                raise ValueError("颜色值必须是0-255之间的整数")
+                            validated_color.append(c)
+                        
+                        self.watermark_settings["color"] = tuple(validated_color)
+                    except:
+                        # 颜色格式错误时使用默认值
+                        self.watermark_settings["color"] = (255, 255, 255, 128)
+                    
+                    # 更新UI显示
+                    self.update_ui_from_settings()
+                    # 刷新预览
+                    self.update_preview()
+                    break
 
     def update_ui_from_settings(self):
         """根据当前水印设置，更新UI控件状态（确保UI与数据同步）"""
